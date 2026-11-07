@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" width="1000" height="480" role="img" aria-label="How dtt's config, codegen, runtime, and build and deploy steps relate, with TerraDart synthesizing terraform/main.tf.json">
+  <title>dtt on TerraDart</title>
+  <style>
+    .sans { font-family: Inter, "SF Pro Display", "Helvetica Neue", system-ui, sans-serif; }
+    .mono { font-family: "JetBrains Mono", "SF Mono", ui-monospace, Consolas, monospace; }
+    .title { font-size: 20px; fill: #F6F3EC; letter-spacing: -0.2px; }
+    .head { font-size: 11px; fill: #9AA0AE; letter-spacing: 1.2px; }
+    .name { font-size: 13px; fill: #F6F3EC; }
+    .label { font-size: 14px; fill: #F6F3EC; }
+    .sub { font-size: 11.5px; fill: #9AA0AE; }
+    .note { font-size: 11px; fill: #6B7385; }
+    .box { fill: #11141B; stroke: #1F2430; stroke-width: 1; }
+    .new { stroke: #4DD0FE; }
+    .td { stroke: #0F8FD8; stroke-width: 1.5; }
+    .edge { fill: none; stroke: #6B7385; stroke-width: 1.5; }
+    .hot { stroke: #4DD0FE; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#6B7385"/>
+    </marker>
+    <marker id="h" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#4DD0FE"/>
+    </marker>
+  </defs>
+
+  <rect width="1000" height="480" rx="10" fill="#0B0D12"/>
+
+  <text x="40" y="46" class="sans title">dtt on TerraDart</text>
+  <text x="40" y="66" class="mono sub">dtt generate &#183; dtt build &#183; dtt deploy</text>
+
+  <text x="40" y="98" class="mono head">CONFIG</text>
+  <text x="280" y="98" class="mono head">CODEGEN</text>
+  <text x="540" y="98" class="mono head">OUTPUT</text>
+  <text x="780" y="98" class="mono head">BUILD &amp; DEPLOY</text>
+
+  <rect x="40" y="110" width="200" height="64" rx="10" class="box new"/>
+  <text x="56" y="138" class="mono name">lib/dtt_config.dart</text>
+  <text x="56" y="158" class="sans sub">typed triggers bind handlers</text>
+
+  <rect x="40" y="196" width="200" height="64" rx="10" class="box"/>
+  <text x="56" y="224" class="mono name">dtt.yaml</text>
+  <text x="56" y="244" class="sans sub">handlers named as strings</text>
+
+  <rect x="280" y="110" width="220" height="150" rx="10" class="box"/>
+  <text x="296" y="138" class="sans label">dtt generate</text>
+  <text x="296" y="166" class="mono sub">dtt_config.dart: dart run</text>
+  <text x="296" y="184" class="mono sub">dtt.yaml: parse</text>
+  <text x="296" y="212" class="sans sub">Both produce one DttConfig</text>
+  <text x="296" y="230" class="sans sub">model in the dtt.yaml shape.</text>
+
+  <rect x="280" y="290" width="220" height="64" rx="10" class="box"/>
+  <text x="296" y="318" class="sans label">server codegen</text>
+  <text x="296" y="338" class="mono sub">code_builder</text>
+
+  <rect x="280" y="376" width="220" height="64" rx="10" class="box td"/>
+  <g transform="translate(292, 388) scale(0.16)">
+    <polygon points="32,48 224,48 180,152 76,152" fill="#4DD0FE"/>
+    <polygon points="76,152 180,152 128,232" fill="#0F8FD8"/>
+    <rect x="60" y="96" width="136" height="6" fill="#3B4A82"/>
+  </g>
+  <text x="338" y="404" class="mono name">DttStack</text>
+  <text x="338" y="424" class="sans sub">TerraDart &#183; terradart_google</text>
+
+  <rect x="540" y="290" width="200" height="64" rx="10" class="box"/>
+  <text x="556" y="318" class="mono name">bin/server.dart</text>
+  <text x="556" y="338" class="sans sub">dtt_runtime router</text>
+
+  <rect x="540" y="376" width="200" height="64" rx="10" class="box new"/>
+  <text x="556" y="404" class="mono name">terraform/main.tf.json</text>
+  <text x="556" y="424" class="sans sub">replaces the three .tf files</text>
+
+  <rect x="780" y="153" width="180" height="64" rx="10" class="box"/>
+  <text x="796" y="181" class="sans label">Google Cloud</text>
+  <text x="796" y="201" class="mono sub">Cloud Run &#183; Eventarc</text>
+
+  <rect x="780" y="290" width="180" height="64" rx="10" class="box"/>
+  <text x="796" y="318" class="sans label">dtt build</text>
+  <text x="796" y="338" class="mono sub">AOT container image</text>
+
+  <rect x="780" y="376" width="180" height="64" rx="10" class="box"/>
+  <text x="796" y="404" class="sans label">dtt deploy</text>
+  <text x="796" y="424" class="mono sub">terraform init / apply</text>
+
+  <path d="M240,142 H278" class="edge hot" marker-end="url(#h)"/>
+  <path d="M240,228 H278" class="edge" marker-end="url(#a)"/>
+  <path d="M390,260 V288" class="edge" marker-end="url(#a)"/>
+  <path d="M280,236 H262 V408 H278" class="edge hot" marker-end="url(#h)"/>
+  <path d="M500,322 H538" class="edge" marker-end="url(#a)"/>
+  <path d="M500,408 H538" class="edge hot" marker-end="url(#h)"/>
+  <path d="M740,322 H778" class="edge" marker-end="url(#a)"/>
+  <path d="M740,408 H778" class="edge hot" marker-end="url(#h)"/>
+  <path d="M870,354 V374" class="edge" marker-end="url(#a)"/>
+  <path d="M960,408 H978 V185 H962" class="edge" marker-end="url(#a)"/>
+  <path d="M780,185 H640 V288" class="edge" marker-end="url(#a)"/>
+
+  <text x="652" y="176" class="mono note">CloudEvent&lt;T&gt;</text>
+  <text x="878" y="369" class="mono note">image</text>
+
+  <rect x="40" y="458" width="14" height="8" rx="2" fill="none" stroke="#4DD0FE"/>
+  <text x="62" y="466" class="sans note">New on this branch. The TerraDart outline marks where TerraDart now sits.</text>
+</svg>

@@ -12,6 +12,11 @@ package:dtt_runtime/dtt_runtime.dart:
     subject (getter: String?)
     time (getter: DateTime?)
     type (getter: String)
+  DttConfig (class extends Object, final):
+    new (const constructor: DttConfig Function({required Service service, required List<Trigger<GeneratedMessage>> triggers}))
+    service (getter: Service)
+    triggers (getter: List<Trigger<GeneratedMessage>>)
+    toJson (method: Map<String, Object?> Function())
   DttEventRouter (class extends Object):
     new (constructor: DttEventRouter Function())
     handle (method: Future<Response@1> Function(Request))
@@ -23,15 +28,78 @@ package:dtt_runtime/dtt_runtime.dart:
     close (method: void Function())
     sendBinaryEvent (method: Future<Response@2> Function({required Map<String, dynamic> data, String? eventId, required String eventType, required String path, required String source}))
     sendStructuredEvent (method: Future<Response@2> Function({required Map<String, dynamic> data, String? eventId, required String eventType, required String path, required String source}))
+  RetryPolicy (class extends Object, final):
+    new (const constructor: RetryPolicy Function({required int maxAttempts}))
+    maxAttempts (getter: int)
+    toJson (method: Map<String, Object?> Function())
+  SecurityProfile (enum):
+    secure (enum constant: SecurityProfile)
+    standard (enum constant: SecurityProfile)
+    values (static const getter: List<SecurityProfile>)
+    yamlName (getter: String)
+  Service (class extends Object, final):
+    new (const constructor: Service Function({ServiceKind kind, Map<String, String> labels, required String name, required String projectId, String region, SecurityProfile securityProfile}))
+    kind (getter: ServiceKind)
+    labels (getter: Map<String, String>)
+    name (getter: String)
+    projectId (getter: String)
+    region (getter: String)
+    securityProfile (getter: SecurityProfile)
+    toJson (method: Map<String, Object?> Function())
+  ServiceKind (enum):
+    job (enum constant: ServiceKind)
+    service (enum constant: ServiceKind)
+    values (static const getter: List<ServiceKind>)
+  Trigger (class<T extends GeneratedMessage> extends Object, final):
+    auditLogWritten (static method: Trigger<LogEntryData> Function({String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<LogEntryData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    cloudBuildStatusChanged (static method: Trigger<BuildEventData> Function({String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<BuildEventData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    firebaseAlertsPublished (static method: Trigger<AlertData> Function({String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<AlertData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    firebaseAuthUserCreated (static method: Trigger<AuthEventData> Function({String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<AuthEventData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    firebaseAuthUserDeleted (static method: Trigger<AuthEventData> Function({String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<AuthEventData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    firebaseRemoteConfigUpdated (static method: Trigger<RemoteConfigEventData> Function({String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<RemoteConfigEventData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    firestoreDocumentCreated (static method: Trigger<Struct> Function({String database, String? deadLetterTopic, required String document, required FutureOr<void> Function(CloudEvent<Struct>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    firestoreDocumentDeleted (static method: Trigger<Struct> Function({String database, String? deadLetterTopic, required String document, required FutureOr<void> Function(CloudEvent<Struct>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    firestoreDocumentUpdated (static method: Trigger<Struct> Function({String database, String? deadLetterTopic, required String document, required FutureOr<void> Function(CloudEvent<Struct>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    firestoreDocumentWritten (static method: Trigger<Struct> Function({String database, String? deadLetterTopic, required String document, required FutureOr<void> Function(CloudEvent<Struct>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    gcsObjectArchived (static method: Trigger<StorageObjectData> Function({required String bucket, String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<StorageObjectData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    gcsObjectDeleted (static method: Trigger<StorageObjectData> Function({required String bucket, String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<StorageObjectData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    gcsObjectFinalized (static method: Trigger<StorageObjectData> Function({required String bucket, String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<StorageObjectData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    gcsObjectMetadataUpdated (static method: Trigger<StorageObjectData> Function({required String bucket, String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<StorageObjectData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    pubsubTopicMessagePublished (static method: Trigger<MessagePublishedData> Function({String? deadLetterTopic, required FutureOr<void> Function(CloudEvent<MessagePublishedData>) handler, required String name, String? path, RetryPolicy? retryPolicy}))
+    deadLetterTopic (getter: String?)
+    event (getter: CloudEventTrigger<T>)
+    filters (getter: Map<String, String>)
+    handler (getter: FutureOr<void> Function(CloudEvent<T>))
+    name (getter: String)
+    path (getter: String?)
+    retryPolicy (getter: RetryPolicy?)
+    register (method: void Function(DttEventRouter))
+  EventHandler (type alias<T extends GeneratedMessage> for FutureOr<void> Function(CloudEvent<T>))
 dart:async:
   Future (referenced)
   FutureOr (referenced)
 dart:core:
   DateTime (referenced)
+  List (referenced)
   Map (referenced)
   Object (referenced)
   String (referenced)
   Uri (referenced)
+  int (referenced)
+package:google_cloud_events/google/events/cloud/audit/v1/data.pb.dart:
+  LogEntryData (referenced)
+package:google_cloud_events/google/events/cloud/cloudbuild/v1/data.pb.dart:
+  BuildEventData (referenced)
+package:google_cloud_events/google/events/cloud/pubsub/v1/data.pb.dart:
+  MessagePublishedData (referenced)
+package:google_cloud_events/google/events/cloud/storage/v1/data.pb.dart:
+  StorageObjectData (referenced)
+package:google_cloud_events/google/events/firebase/auth/v1/data.pb.dart:
+  AuthEventData (referenced)
+package:google_cloud_events/google/events/firebase/firebasealerts/v1/data.pb.dart:
+  AlertData (referenced)
+package:google_cloud_events/google/events/firebase/remoteconfig/v1/data.pb.dart:
+  RemoteConfigEventData (referenced)
 package:google_cloud_events/google_cloud_triggers.dart:
   CloudEventTrigger (referenced)
 package:http/src/client.dart:
@@ -40,6 +108,8 @@ package:http/src/response.dart:
   Response@2 (referenced)
 package:protobuf/src/protobuf/internal.dart:
   GeneratedMessage (referenced)
+package:protobuf/well_known_types/google/protobuf/struct.pb.dart:
+  Struct (referenced)
 package:shelf/src/request.dart:
   Request (referenced)
 package:shelf/src/response.dart:

@@ -13,5 +13,6 @@
 // limitations under the License.
 
 export 'src/cloudevent.dart';
+export 'src/config.dart';
 export 'src/router.dart';
 export 'src/simulator.dart';

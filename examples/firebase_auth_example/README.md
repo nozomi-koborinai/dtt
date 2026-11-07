@@ -6,8 +6,8 @@ Dart microservice responding to Google Cloud Storage finalization events
 
 ## 📁 Project Structure
 
-- `dtt.yaml`: Declarative service configuration, security profile, and trigger
-  definitions.
+- `lib/dtt_config.dart`: Typed service configuration and triggers. Each trigger
+  references its handler, so the compiler checks the payload type.
 - `lib/src/handlers/on_upload.dart`: Strongly-typed CloudEvent callback handler.
 - `bin/server.dart`: Generated Shelf entrypoint server.
 

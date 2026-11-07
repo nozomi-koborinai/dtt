@@ -1,0 +1,152 @@
+{
+  "terraform": {
+    "required_version": ">= 1.11.0",
+    "required_providers": {
+      "google": {
+        "source": "hashicorp/google",
+        "version": "~> 8.0"
+      }
+    }
+  },
+  "variable": {
+    "project_id": {
+      "type": "string",
+      "description": "Target Google Cloud Platform Project ID.",
+      "default": "dtt-pkg-test"
+    },
+    "region": {
+      "type": "string",
+      "description": "Target GCP region for resources deployment.",
+      "default": "us-central1"
+    },
+    "container_image": {
+      "type": "string",
+      "description": "Target Docker/Artifact Registry container image URL or digest."
+    }
+  },
+  "provider": {
+    "google": {
+      "project": "${var.project_id}",
+      "region": "${var.region}"
+    }
+  },
+  "resource": {
+    "google_service_account": {
+      "eventarc_invoker": {
+        "account_id": "dtt-gcs-triggers-inv",
+        "display_name": "Eventarc gcs-triggers Invoker Service Account"
+      }
+    },
+    "google_cloud_run_v2_service": {
+      "service": {
+        "name": "gcs-triggers",
+        "location": "${var.region}",
+        "template": {
+          "containers": [
+            {
+              "image": "${var.container_image}",
+              "ports": {
+                "container_port": 8080
+              }
+            }
+          ]
+        },
+        "ingress": "INGRESS_TRAFFIC_INTERNAL_ONLY",
+        "labels": {
+          "managed_by": "dart_terraform_triggers"
+        },
+        "deletion_protection": false
+      }
+    },
+    "google_cloud_run_v2_service_iam_member": {
+      "invoker_role": {
+        "name": "${google_cloud_run_v2_service.service.name}",
+        "role": "roles/run.invoker",
+        "member": "serviceAccount:${google_service_account.eventarc_invoker.email}",
+        "location": "${google_cloud_run_v2_service.service.location}",
+        "project": "${google_cloud_run_v2_service.service.project}"
+      }
+    },
+    "google_project_iam_member": {
+      "eventarc_receiver": {
+        "project": "${var.project_id}",
+        "role": "roles/eventarc.eventReceiver",
+        "member": "serviceAccount:${google_service_account.eventarc_invoker.email}"
+      }
+    },
+    "google_pubsub_topic": {
+      "storage_topic": {
+        "name": "gcs-triggers-storage-topic",
+        "labels": {
+          "managed_by": "dart_terraform_triggers"
+        }
+      }
+    },
+    "google_pubsub_topic_iam_member": {
+      "storage_pubsub_publisher": {
+        "topic": "${google_pubsub_topic.storage_topic.id}",
+        "role": "roles/pubsub.publisher",
+        "member": "serviceAccount:${data.google_storage_project_service_account.gcs_account.email_address}"
+      }
+    },
+    "google_service_account_iam_member": {
+      "pubsub_token_creator": {
+        "service_account_id": "${google_service_account.eventarc_invoker.name}",
+        "role": "roles/iam.serviceAccountTokenCreator",
+        "member": "serviceAccount:service-${data.google_project.project.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+      },
+      "eventarc_sa_user": {
+        "service_account_id": "${google_service_account.eventarc_invoker.name}",
+        "role": "roles/iam.serviceAccountUser",
+        "member": "serviceAccount:service-${data.google_project.project.number}@gcp-sa-eventarc.iam.gserviceaccount.com"
+      }
+    },
+    "google_eventarc_trigger": {
+      "trigger_on_upload": {
+        "name": "gcs-triggers-on-upload-trigger",
+        "location": "${var.region}",
+        "matching_criteria": [
+          {
+            "attribute": "type",
+            "value": "google.cloud.storage.object.v1.finalized"
+          },
+          {
+            "attribute": "bucket",
+            "value": "dtt-pkg-test-upload"
+          }
+        ],
+        "destination": {
+          "cloud_run_service": {
+            "path": "/events/uploads",
+            "region": "${var.region}",
+            "service": "${google_cloud_run_v2_service.service.name}"
+          }
+        },
+        "service_account": "${google_service_account.eventarc_invoker.email}",
+        "labels": {
+          "managed_by": "dart_terraform_triggers"
+        }
+      }
+    }
+  },
+  "data": {
+    "google_project": {
+      "project": {}
+    },
+    "google_storage_project_service_account": {
+      "gcs_account": {}
+    }
+  },
+  "output": {
+    "service_url": {
+      "value": "${google_cloud_run_v2_service.service.uri}",
+      "description": "URL of our deployed serverless Dart Cloud Run service container."
+    },
+    "eventarc_trigger_ids": {
+      "value": [
+        "${google_eventarc_trigger.trigger_on_upload.id}"
+      ],
+      "description": "Resource identifiers tracking active Eventarc triggers."
+    }
+  }
+}

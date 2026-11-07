@@ -22,6 +22,7 @@ dependencies:
   http: ^1.6.0
   meta: ^1.17.0
   path: ^1.9.0
+  terradart_google: ^0.36.0
   yaml: ^3.1.2
 
 dev_dependencies:

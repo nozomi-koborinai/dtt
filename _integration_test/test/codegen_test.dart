@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:checks/checks.dart';
@@ -20,14 +21,40 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 import 'package:test_descriptor/test_descriptor.dart' as d;
 
+/// Generates [packageName] inside the sandbox and returns its
+/// `terraform/main.tf.json`.
+Future<Map<String, dynamic>> _generate(String packageName) async {
+  final workspacePath = d.sandbox;
+  await generateProject(
+    workspaceRoot: workspacePath,
+    packageDir: p.join(workspacePath, packageName),
+  );
+  final tfFile = File(p.join(workspacePath, 'terraform', 'main.tf.json'));
+  return jsonDecode(await tfFile.readAsString()) as Map<String, dynamic>;
+}
+
+Map<String, dynamic> _block(
+  Map<String, dynamic> tf,
+  String type,
+  String name, {
+  String kind = 'resource',
+}) =>
+    ((tf[kind] as Map<String, dynamic>)[type] as Map<String, dynamic>)[name]
+        as Map<String, dynamic>;
+
+List<Object?> _criteria(Map<String, dynamic> trigger) => [
+  for (final c in trigger['matching_criteria'] as List<dynamic>)
+    ((c as Map<String, dynamic>)['attribute'], c['value']),
+];
+
+Future<String> _server(String packageName) =>
+    File(p.join(d.sandbox, packageName, 'bin', 'server.dart')).readAsString();
+
 void main() {
   group('DttGenerator Codebase and Manifests Orchestration Tests', () {
-    test(
-      'Natively parses dtt.yaml and string-interpolates all E2E assets',
-      () async {
-        // 1. Setup a clean package sandbox directory declaratively!
-        await d.dir('my_package', [
-          d.file('dtt.yaml', '''
+    test('Natively parses dtt.yaml and synthesizes all E2E assets', () async {
+      await d.dir('my_package', [
+        d.file('dtt.yaml', '''
 service:
   name: firebase-auth-triggers
   project_id: n26-full-stack-dart
@@ -39,86 +66,77 @@ triggers:
     path: /events/auth
     handler: onUserCreated
 '''),
-        ]).create();
+      ]).create();
 
-        final workspacePath = d.sandbox;
-        final packagePath = p.join(workspacePath, 'my_package');
+      final tf = await _generate('my_package');
 
-        // 2. Invoke the core generator engine
-        await generateProject(
-          workspaceRoot: workspacePath,
-          packageDir: packagePath,
-        );
+      final serverContent = await _server('my_package');
+      check(serverContent).contains(
+        "import 'package:google_cloud_events/google_cloud_events.dart';",
+      );
+      check(serverContent).contains(
+        "import 'package:my_package/src/handlers/on_user_created.dart';",
+      );
+      check(serverContent).contains('void main() async {');
+      check(serverContent).contains('await serveHandler(pipeline);');
 
-        // 3. Assert generated serverless entrypoint bin/server.dart is pristine
-        final serverFile = File(p.join(packagePath, 'bin', 'server.dart'));
-        check(await serverFile.exists()).isTrue();
-
-        final serverContent = await serverFile.readAsString();
-        check(serverContent).contains(
-          "import 'package:google_cloud_events/google_cloud_events.dart';",
-        );
-        check(serverContent).contains(
-          "import 'package:my_package/src/handlers/on_user_created.dart';",
-        );
-        check(serverContent).contains('void main() async {');
-        check(serverContent).contains('await serveHandler(pipeline);');
-
-        // 4. Assert generated Main Terraform manifest is pristine
-        final mainTfFile = File(p.join(workspacePath, 'terraform', 'main.tf'));
-        check(await mainTfFile.exists()).isTrue();
-
-        final mainTfContent = await mainTfFile.readAsString();
-        check(mainTfContent).contains('data "google_project" "project" {');
+      for (final legacy in ['main.tf', 'variables.tf', 'outputs.tf']) {
         check(
-          mainTfContent,
-        ).contains('resource "google_cloud_run_v2_service" "service"');
-        check(
-          mainTfContent,
-        ).contains('resource "google_service_account" "eventarc_invoker"');
-        check(
-          mainTfContent,
-        ).contains('name     = google_cloud_run_v2_service.service.name');
-        check(mainTfContent).contains(
-          'resource "google_eventarc_trigger" "trigger_auth_user_created"',
-        );
-        check(mainTfContent).contains('provider        = google-beta');
-        check(
-          mainTfContent,
-        ).contains('service = google_cloud_run_v2_service.service.name');
-        check(
-          mainTfContent,
-        ).contains('value     = "google.firebase.auth.user.v2.created"');
-        check(mainTfContent).contains('path    = "/events/auth"');
-        check(mainTfContent).not((c) => c.contains('null_resource'));
+          File(p.join(d.sandbox, 'terraform', legacy)).existsSync(),
+        ).isFalse();
+      }
 
-        // 5. Assert generated Variables Terraform manifest is pristine
-        final varsTfFile = File(
-          p.join(workspacePath, 'terraform', 'variables.tf'),
-        );
-        check(await varsTfFile.exists()).isTrue();
+      check(
+        (tf['data'] as Map<String, dynamic>).keys,
+      ).contains('google_project');
+      check(
+        _block(tf, 'google_service_account', 'eventarc_invoker'),
+      ).containsKey('account_id');
+      check(
+        _block(tf, 'google_cloud_run_v2_service_iam_member', 'invoker_role'),
+      )['name'].equals(r'${google_cloud_run_v2_service.service.name}');
 
-        final varsTfContent = await varsTfFile.readAsString();
-        check(varsTfContent).contains('default     = "n26-full-stack-dart"');
-        check(varsTfContent).contains('variable "container_image"');
+      final trigger = _block(
+        tf,
+        'google_eventarc_trigger',
+        'trigger_auth_user_created',
+      );
+      check(trigger['provider']).equals('google-beta');
+      check(trigger['location']).equals('global');
+      check(trigger['destination']).isA<Map<String, dynamic>>().deepEquals({
+        'cloud_run_service': {
+          'path': '/events/auth',
+          'region': r'${var.region}',
+          'service': r'${google_cloud_run_v2_service.service.name}',
+        },
+      });
+      check(
+        _criteria(trigger),
+      ).deepEquals([('type', 'google.firebase.auth.user.v2.created')]);
+      check(
+        ((tf['terraform'] as Map<String, dynamic>)['required_providers']
+                as Map<String, dynamic>)
+            .keys,
+      ).unorderedEquals(['google', 'google-beta']);
+      check(
+        (tf['resource'] as Map<String, dynamic>).keys,
+      ).not((c) => c.contains('null_resource'));
 
-        // 6. Assert generated Outputs Terraform manifest is pristine
-        final outputsTfFile = File(
-          p.join(workspacePath, 'terraform', 'outputs.tf'),
-        );
-        check(await outputsTfFile.exists()).isTrue();
+      final variables = tf['variable'] as Map<String, dynamic>;
+      check(
+        (variables['project_id'] as Map<String, dynamic>)['default'],
+      ).equals('n26-full-stack-dart');
+      check(variables.keys).contains('container_image');
 
-        final outputsTfContent = await outputsTfFile.readAsString();
-        check(
-          outputsTfContent,
-        ).contains('value       = google_cloud_run_v2_service.service.uri');
-      },
-    );
+      check(
+        ((tf['output'] as Map<String, dynamic>)['service_url']
+            as Map<String, dynamic>)['value'],
+      ).equals(r'${google_cloud_run_v2_service.service.uri}');
+    });
 
     test(
       'Custom Path Override generates path argument in server.dart',
       () async {
-        // 1. Setup clean sandbox directory declaratively!
         await d.dir('custom_package', [
           d.file('dtt.yaml', '''
 service:
@@ -134,18 +152,9 @@ triggers:
 '''),
         ]).create();
 
-        final workspacePath = d.sandbox;
-        final packagePath = p.join(workspacePath, 'custom_package');
+        await _generate('custom_package');
 
-        await generateProject(
-          workspaceRoot: workspacePath,
-          packageDir: packagePath,
-        );
-
-        final serverFile = File(p.join(packagePath, 'bin', 'server.dart'));
-        check(await serverFile.exists()).isTrue();
-
-        final serverContent = await serverFile.readAsString();
+        final serverContent = await _server('custom_package');
         check(
           serverContent,
         ).contains('CloudEventTrigger.firebaseAuthUserCreated');
@@ -157,7 +166,6 @@ triggers:
     test(
       'Cloud Firestore trigger generates dynamic database and document filters',
       () async {
-        // 1. Setup clean sandbox directory declaratively!
         await d.dir('firestore_package', [
           d.file('dtt.yaml', '''
 service:
@@ -175,61 +183,52 @@ triggers:
 '''),
         ]).create();
 
-        final workspacePath = d.sandbox;
-        final packagePath = p.join(workspacePath, 'firestore_package');
+        final tf = await _generate('firestore_package');
 
-        // 2. Invoke the core generator engine
-        await generateProject(
-          workspaceRoot: workspacePath,
-          packageDir: packagePath,
-        );
-
-        // 3. Assert generated serverless entrypoint bin/server.dart is pristine
-        final serverFile = File(p.join(packagePath, 'bin', 'server.dart'));
-        check(await serverFile.exists()).isTrue();
-
-        final serverContent = await serverFile.readAsString();
+        final serverContent = await _server('firestore_package');
         check(
           serverContent,
         ).contains('CloudEventTrigger.firestoreDocumentWritten');
         check(serverContent).contains("path: '/events/users'");
         check(serverContent).contains('handler: onUserWritten');
 
-        // 4. Assert generated Main Terraform manifest contains all Firestore
-        //    filters
-        final mainTfFile = File(p.join(workspacePath, 'terraform', 'main.tf'));
-        check(await mainTfFile.exists()).isTrue();
+        final trigger = _block(
+          tf,
+          'google_eventarc_trigger',
+          'trigger_user_written',
+        );
+        check(_criteria(trigger)).deepEquals([
+          ('type', 'google.cloud.firestore.document.v1.written'),
+          ('database', '(default)'),
+          ('document', 'documents/users/{userId}'),
+        ]);
+        check(
+          trigger['event_data_content_type'],
+        ).equals('application/protobuf');
+        check(
+          _block(
+            tf,
+            'google_pubsub_topic_iam_member',
+            'firestore_pubsub_publisher',
+          ),
+        )['topic'].equals(r'${google_pubsub_topic.firestore_topic.id}');
 
-        final mainTfContent = await mainTfFile.readAsString();
-        check(mainTfContent).contains('data "google_project" "project" {');
-        check(
-          mainTfContent,
-        ).contains('resource "google_eventarc_trigger" "trigger_user_written"');
-        check(
-          mainTfContent,
-        ).contains('value     = "google.cloud.firestore.document.v1.written"');
-        check(mainTfContent).contains('attribute = "database"');
-        check(mainTfContent).contains('value     = "(default)"');
-        check(mainTfContent).contains('attribute = "document"');
-        check(mainTfContent).contains('value     = "documents/users/{userId}"');
-        check(mainTfContent).contains(
-          'resource "google_pubsub_topic_iam_member" "firestore_pubsub_publisher"',
+        final audit = _block(
+          tf,
+          'google_project_iam_audit_config',
+          'firestore_audit',
         );
-        check(mainTfContent).contains(
-          'resource "google_project_iam_audit_config" "firestore_audit"',
-        );
-        check(mainTfContent).contains('service = "firestore.googleapis.com"');
-        check(mainTfContent).contains('log_type = "DATA_WRITE"');
-        check(mainTfContent).contains('log_type = "DATA_READ"');
-        check(mainTfContent).not((c) => c.contains('service = "allServices"'));
+        check(audit['service']).equals('firestore.googleapis.com');
+        check(audit['audit_log_config']).isA<List<dynamic>>().deepEquals([
+          {'log_type': 'DATA_WRITE'},
+          {'log_type': 'DATA_READ'},
+        ]);
       },
     );
 
-    test(
-      'Custom labels in dtt.yaml bakes into main.tf and deploy.dart',
-      () async {
-        await d.dir('label_package', [
-          d.file('dtt.yaml', '''
+    test('Custom labels in dtt.yaml label every labelable resource', () async {
+      await d.dir('label_package', [
+        d.file('dtt.yaml', '''
 service:
   name: label-triggers
   project_id: label-proj
@@ -245,25 +244,25 @@ triggers:
     path: /events/uploads
     handler: onUpload
 '''),
-        ]).create();
+      ]).create();
 
-        final workspacePath = d.sandbox;
-        final packagePath = p.join(workspacePath, 'label_package');
+      final tf = await _generate('label_package');
 
-        await generateProject(
-          workspaceRoot: workspacePath,
-          packageDir: packagePath,
-        );
-
-        final mainTfFile = File(p.join(workspacePath, 'terraform', 'main.tf'));
-        check(await mainTfFile.exists()).isTrue();
-        final mainTfContent = await mainTfFile.readAsString();
-        check(mainTfContent).contains('default_labels = {');
-        check(mainTfContent).contains('managed_by = "dart_terraform_triggers"');
-        check(mainTfContent).contains('env = "staging"');
-        check(mainTfContent).contains('team = "backend"');
-      },
-    );
+      const expected = {
+        'managed_by': 'dart_terraform_triggers',
+        'env': 'staging',
+        'team': 'backend',
+      };
+      for (final (type, name) in [
+        ('google_cloud_run_v2_service', 'service'),
+        ('google_pubsub_topic', 'storage_topic'),
+        ('google_eventarc_trigger', 'trigger_my_upload'),
+      ]) {
+        check(
+          _block(tf, type, name)['labels'],
+        ).isA<Map<String, dynamic>>().deepEquals(expected);
+      }
+    });
 
     test(
       'Expanded catalog GCS deleted and Firestore created generate',
@@ -289,35 +288,29 @@ triggers:
 '''),
         ]).create();
 
-        final workspacePath = d.sandbox;
-        final packagePath = p.join(workspacePath, 'expanded_package');
+        final tf = await _generate('expanded_package');
 
-        await generateProject(
-          workspaceRoot: workspacePath,
-          packageDir: packagePath,
-        );
-
-        final serverFile = File(p.join(packagePath, 'bin', 'server.dart'));
-        check(await serverFile.exists()).isTrue();
-        final serverContent = await serverFile.readAsString();
+        final serverContent = await _server('expanded_package');
         check(serverContent).contains('CloudEventTrigger.gcsObjectDeleted');
         check(
           serverContent,
         ).contains('CloudEventTrigger.firestoreDocumentCreated');
 
-        final mainTfFile = File(p.join(workspacePath, 'terraform', 'main.tf'));
-        final mainTfContent = await mainTfFile.readAsString();
         check(
-          mainTfContent,
-        ).contains('value     = "google.cloud.storage.object.v1.deleted"');
+          _criteria(
+            _block(tf, 'google_eventarc_trigger', 'trigger_on_gcs_del'),
+          ),
+        ).contains(('type', 'google.cloud.storage.object.v1.deleted'));
         check(
-          mainTfContent,
-        ).contains('value     = "google.cloud.firestore.document.v1.created"');
+          _criteria(
+            _block(tf, 'google_eventarc_trigger', 'trigger_on_fs_create'),
+          ),
+        ).contains(('type', 'google.cloud.firestore.document.v1.created'));
       },
     );
 
     test(
-      'security_profile: secure emits module secure_cloud_run blueprint',
+      'security_profile: secure runs one service as a role-less identity',
       () async {
         await d.dir('secure_package', [
           d.file('dtt.yaml', '''
@@ -336,19 +329,23 @@ triggers:
 '''),
         ]).create();
 
-        final workspacePath = d.sandbox;
-        final packagePath = p.join(workspacePath, 'secure_package');
+        final tf = await _generate('secure_package');
 
-        await generateProject(
-          workspaceRoot: workspacePath,
-          packageDir: packagePath,
-        );
-
-        final mainTfFile = File(p.join(workspacePath, 'terraform', 'main.tf'));
-        final mainTfContent = await mainTfFile.readAsString();
-        check(mainTfContent).contains('module "secure_cloud_run" {');
-        check(mainTfContent).contains('GoogleCloudPlatform/cloud-run/google');
-        check(mainTfContent).contains('serverless_neg_only = true');
+        check(tf).not((c) => c.containsKey('module'));
+        check(
+          (tf['resource']
+                  as Map<String, dynamic>)['google_cloud_run_v2_service']
+              as Map<String, dynamic>,
+        ).has((s) => s.keys, 'keys').deepEquals(['service']);
+        final template =
+            _block(tf, 'google_cloud_run_v2_service', 'service')['template']
+                as Map<String, dynamic>;
+        check(
+          template['service_account'],
+        ).equals(r'${google_service_account.runtime.email}');
+        check(
+          _block(tf, 'google_service_account', 'runtime')['account_id'],
+        ).equals('dtt-secure-service-run');
       },
     );
 
@@ -372,28 +369,22 @@ triggers:
 '''),
         ]).create();
 
-        final workspacePath = d.sandbox;
-        final packagePath = p.join(workspacePath, 'integrations_package');
+        final tf = await _generate('integrations_package');
 
-        await generateProject(
-          workspaceRoot: workspacePath,
-          packageDir: packagePath,
-        );
-
-        final mainTfFile = File(p.join(workspacePath, 'terraform', 'main.tf'));
-        final mainTfContent = await mainTfFile.readAsString();
         check(
-          mainTfContent,
-        ).contains('value     = "google.cloud.storage.object.v1.finalized"');
-        check(mainTfContent).contains('value     = "export-bucket"');
+          _criteria(
+            _block(tf, 'google_eventarc_trigger', 'trigger_export_trigger'),
+          ),
+        ).deepEquals([
+          ('type', 'google.cloud.storage.object.v1.finalized'),
+          ('bucket', 'export-bucket'),
+        ]);
       },
     );
 
-    test(
-      'kind: job emits resource google_cloud_run_v2_job for async execution',
-      () async {
-        await d.dir('job_package', [
-          d.file('dtt.yaml', '''
+    test('kind: job runs the job from a workflow per trigger', () async {
+      await d.dir('job_package', [
+        d.file('dtt.yaml', '''
 service:
   name: batch-job
   kind: job
@@ -407,26 +398,53 @@ triggers:
     path: /events/job
     handler: onJob
 '''),
-        ]).create();
+      ]).create();
 
-        final workspacePath = d.sandbox;
-        final packagePath = p.join(workspacePath, 'job_package');
+      final tf = await _generate('job_package');
+      final resources = tf['resource'] as Map<String, dynamic>;
 
-        await generateProject(
-          workspaceRoot: workspacePath,
-          packageDir: packagePath,
-        );
+      check(
+        resources.keys,
+      ).not((c) => c.contains('google_cloud_run_v2_service'));
+      final job = _block(tf, 'google_cloud_run_v2_job', 'job');
+      check(job['template']).isA<Map<String, dynamic>>().deepEquals({
+        'template': {
+          'containers': [
+            {'image': r'${var.container_image}'},
+          ],
+        },
+      });
 
-        final mainTfFile = File(p.join(workspacePath, 'terraform', 'main.tf'));
-        final mainTfContent = await mainTfFile.readAsString();
-        check(
-          mainTfContent,
-        ).contains('resource "google_cloud_run_v2_job" "job"');
-      },
-    );
+      final workflow = _block(
+        tf,
+        'google_workflows_workflow',
+        'dispatch_on_gcs_job',
+      );
+      check(workflow['source_contents']).isA<String>()
+        ..contains('googleapis.run.v2.projects.locations.jobs.run')
+        ..contains(r'name: ${google_cloud_run_v2_job.job.id}')
+        ..contains(r'$${json.encode_to_string(event)}');
+      check(
+        _block(
+          tf,
+          'google_eventarc_trigger',
+          'trigger_on_gcs_job',
+        )['destination'],
+      ).isA<Map<String, dynamic>>().deepEquals({
+        'workflow': r'${google_workflows_workflow.dispatch_on_gcs_job.id}',
+      });
+      check(
+        (tf['output'] as Map<String, dynamic>).keys,
+      ).unorderedEquals(['job_name', 'eventarc_trigger_ids']);
+
+      final serverContent = await _server('job_package');
+      check(serverContent)
+        ..contains("env['DTT_CLOUD_EVENT']")
+        ..not((c) => c.contains('serveHandler'));
+    });
 
     test(
-      'dead_letter_topic and retry_policy generates Eventarc resiliency blocks',
+      'dead_letter_topic and retry_policy generate Eventarc resiliency blocks',
       () async {
         await d.dir('resiliency_package', [
           d.file('dtt.yaml', '''
@@ -442,27 +460,117 @@ triggers:
     path: /events/res
     handler: onRes
     dead_letter_topic: projects/res-proj/topics/my-dlq-topic
-    retry_policy: RETRY_POLICY_RETRY
+    retry_policy:
+      max_attempts: 1
 '''),
         ]).create();
 
-        final workspacePath = d.sandbox;
-        final packagePath = p.join(workspacePath, 'resiliency_package');
+        final tf = await _generate('resiliency_package');
 
-        await generateProject(
-          workspaceRoot: workspacePath,
-          packageDir: packagePath,
+        final trigger = _block(
+          tf,
+          'google_eventarc_trigger',
+          'trigger_on_resilient_event',
         );
-
-        final mainTfFile = File(p.join(workspacePath, 'terraform', 'main.tf'));
-        final mainTfContent = await mainTfFile.readAsString();
-        check(mainTfContent).contains('pubsub {');
+        check(trigger['transport']).isA<Map<String, dynamic>>().deepEquals({
+          'pubsub': {'topic': 'projects/res-proj/topics/my-dlq-topic'},
+        });
         check(
-          mainTfContent,
-        ).contains('topic = "projects/res-proj/topics/my-dlq-topic"');
-        check(mainTfContent).contains('RETRY_POLICY_RETRY');
+          trigger['retry_policy'],
+        ).isA<Map<String, dynamic>>().deepEquals({'max_attempts': 1});
       },
     );
+
+    test('retry_policy as a bare string is rejected', () async {
+      await d.dir('legacy_retry_package', [
+        d.file('dtt.yaml', '''
+service:
+  name: legacy-retry
+  project_id: res-proj
+
+triggers:
+  - name: on-event
+    type: google.cloud.storage.object.v1.finalized
+    bucket: res-bucket
+    handler: onRes
+    retry_policy: RETRY_POLICY_RETRY
+'''),
+      ]).create();
+
+      await check(_generate('legacy_retry_package')).throws<FormatException>();
+    });
+
+    test('retry_policy max_attempts other than 1 is rejected', () async {
+      await d.dir('many_retries_package', [
+        d.file('dtt.yaml', '''
+service:
+  name: many-retries
+  project_id: res-proj
+
+triggers:
+  - name: on-event
+    type: google.cloud.storage.object.v1.finalized
+    bucket: res-bucket
+    handler: onRes
+    retry_policy:
+      max_attempts: 3
+'''),
+      ]).create();
+
+      await check(_generate('many_retries_package')).throws<FormatException>();
+    });
+
+    test('retry_policy on a kind: job trigger is rejected', () async {
+      await d.dir('job_retry_package', [
+        d.file('dtt.yaml', '''
+service:
+  name: job-retry
+  project_id: res-proj
+  kind: job
+
+triggers:
+  - name: on-event
+    type: google.cloud.storage.object.v1.finalized
+    bucket: res-bucket
+    handler: onRes
+    retry_policy:
+      max_attempts: 1
+'''),
+      ]).create();
+
+      await check(_generate('job_retry_package')).throws<FormatException>();
+    });
+
+    test('lib/dtt_config.dart drives server.dart and main.tf.json', () async {
+      var rootDir = Directory.current.path;
+      if (rootDir.endsWith('_integration_test')) {
+        rootDir = p.canonicalize(p.join(rootDir, '..'));
+      }
+      final exampleDir = p.join(rootDir, 'examples', 'firebase_auth_example');
+
+      await generateProject(workspaceRoot: d.sandbox, packageDir: exampleDir);
+
+      final serverContent = await File(
+        p.join(exampleDir, 'bin', 'server.dart'),
+      ).readAsString();
+      check(serverContent)
+        ..contains("import 'package:firebase_auth_example/dtt_config.dart';")
+        ..contains('trigger.register(router);');
+
+      final tf =
+          jsonDecode(
+                await File(
+                  p.join(d.sandbox, 'terraform', 'main.tf.json'),
+                ).readAsString(),
+              )
+              as Map<String, dynamic>;
+      check(
+        _criteria(_block(tf, 'google_eventarc_trigger', 'trigger_on_upload')),
+      ).deepEquals([
+        ('type', 'google.cloud.storage.object.v1.finalized'),
+        ('bucket', 'dtt-pkg-test-upload'),
+      ]);
+    });
 
     test('dtt dev warns on invalid JSON payload fixture', () async {
       var rootDir = Directory.current.path;
