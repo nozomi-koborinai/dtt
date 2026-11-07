@@ -500,6 +500,47 @@ triggers:
       await check(_generate('legacy_retry_package')).throws<FormatException>();
     });
 
+    test('retry_policy max_attempts other than 1 is rejected', () async {
+      await d.dir('many_retries_package', [
+        d.file('dtt.yaml', '''
+service:
+  name: many-retries
+  project_id: res-proj
+
+triggers:
+  - name: on-event
+    type: google.cloud.storage.object.v1.finalized
+    bucket: res-bucket
+    handler: onRes
+    retry_policy:
+      max_attempts: 3
+'''),
+      ]).create();
+
+      await check(_generate('many_retries_package')).throws<FormatException>();
+    });
+
+    test('retry_policy on a kind: job trigger is rejected', () async {
+      await d.dir('job_retry_package', [
+        d.file('dtt.yaml', '''
+service:
+  name: job-retry
+  project_id: res-proj
+  kind: job
+
+triggers:
+  - name: on-event
+    type: google.cloud.storage.object.v1.finalized
+    bucket: res-bucket
+    handler: onRes
+    retry_policy:
+      max_attempts: 1
+'''),
+      ]).create();
+
+      await check(_generate('job_retry_package')).throws<FormatException>();
+    });
+
     test('lib/dtt_config.dart drives server.dart and main.tf.json', () async {
       var rootDir = Directory.current.path;
       if (rootDir.endsWith('_integration_test')) {

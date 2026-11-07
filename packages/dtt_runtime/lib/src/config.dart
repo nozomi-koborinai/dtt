@@ -81,7 +81,8 @@ enum SecurityProfile {
   final String yamlName;
 }
 
-/// Eventarc delivery retries; `maxAttempts: 1` disables retries.
+/// Eventarc delivery retries. Eventarc accepts only `maxAttempts: 1`, which
+/// disables retries, and only for [ServiceKind.service].
 final class RetryPolicy {
   const RetryPolicy({required this.maxAttempts});
 

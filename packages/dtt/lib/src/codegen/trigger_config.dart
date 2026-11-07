@@ -82,12 +82,10 @@ base class TriggerConfig {
     final deadLetterTopic = field('dead_letter_topic') as String?;
     final retryPolicy = switch (field('retry_policy')) {
       null => null,
-      {'max_attempts': final int maxAttempts} => RetryPolicy(
-        maxAttempts: maxAttempts,
-      ),
+      {'max_attempts': 1} => const RetryPolicy(maxAttempts: 1),
       final other => throw FormatException(
-        'Trigger [$name] retry_policy must be a mapping such as '
-        '{max_attempts: 1}, not [$other].',
+        'Trigger [$name] retry_policy must be {max_attempts: 1}, the only '
+        'value Eventarc accepts, not [$other].',
       ),
     };
 
@@ -244,16 +242,17 @@ class DttConfig {
     }
 
     final labelsNode = serviceNode['labels'] as Map<Object?, Object?>?;
+    final kind = switch (serviceNode['kind'] ?? 'service') {
+      'service' => ServiceKind.service,
+      'job' => ServiceKind.job,
+      final other => throw FormatException('Unknown service kind [$other].'),
+    };
 
     return DttConfig(
       serviceName: serviceNode['name'] as String? ?? 'dtt-service',
       projectId: serviceNode['project_id'] as String? ?? 'gcp-project-id',
       region: serviceNode['region'] as String? ?? 'us-central1',
-      kind: switch (serviceNode['kind'] ?? 'service') {
-        'service' => ServiceKind.service,
-        'job' => ServiceKind.job,
-        final other => throw FormatException('Unknown service kind [$other].'),
-      },
+      kind: kind,
       securityProfile: switch (serviceNode['security_profile'] ?? 'default') {
         'default' => SecurityProfile.standard,
         'secure' => SecurityProfile.secure,
@@ -265,7 +264,7 @@ class DttConfig {
         for (final MapEntry(:key, :value) in (labelsNode ?? const {}).entries)
           key.toString(): value.toString(),
       },
-      triggers: [
+      triggers: _rejectRetryPolicyOnJobs(kind, [
         for (final node in triggersNode)
           if (node is Map<Object?, Object?>)
             TriggerConfig.fromMap(
@@ -277,9 +276,27 @@ class DttConfig {
               'Trigger mappings must specify name, type, path, and handler '
               'callbacks.',
             ),
-      ],
+      ]),
       source: source,
     );
+  }
+
+  /// Eventarc accepts `retry_policy` only on Cloud Run service destinations,
+  /// and a job's triggers deliver to a workflow.
+  static List<TriggerConfig> _rejectRetryPolicyOnJobs(
+    ServiceKind kind,
+    List<TriggerConfig> triggers,
+  ) {
+    if (kind != ServiceKind.job) return triggers;
+    for (final trigger in triggers) {
+      if (trigger.retryPolicy != null) {
+        throw FormatException(
+          'Trigger [${trigger.name}] sets retry_policy, which kind: job does '
+          'not support.',
+        );
+      }
+    }
+    return triggers;
   }
 
   /// Loads `lib/dtt_config.dart` when present, otherwise `dtt.yaml`.
