@@ -33,8 +33,8 @@ Interactively or declaratively registers an Eventarc trigger mapping.
 
 ### `dtt generate`
 
-Generates Shelf event router entrypoints (`bin/server.dart`) and declarative
-Terraform HCL manifests (`terraform/main.tf`).
+Generates Shelf event router entrypoints (`bin/server.dart`) and the declarative
+Terraform manifest (`terraform/main.tf.json`), synthesized with TerraDart.
 
 - `-p, --package-dir`: Target package folder path (defaults to current
   directory).

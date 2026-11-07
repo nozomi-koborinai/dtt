@@ -80,8 +80,8 @@ An interactive or declarative command that updates
 
 Automates containerization and serverless infrastructure deployment:
 
-1. Generates Terraform configuration (`main.tf`, `variables.tf`, `outputs.tf`)
-   containing necessary Google provider blocks.
+1. Generates Terraform configuration (`main.tf.json`) containing necessary
+   Google provider blocks.
 2. Triggers a secure Docker image build (via Google Cloud Build or a local
    environment).
 3. Invokes `terraform init` and `terraform apply` to provision:
@@ -300,16 +300,14 @@ void onStorageUpload(CloudEvent<StorageObjectData> event, StorageClient storage)
 ## 7. Automated Infrastructure Generation (Terraform)
 
 Rather than writing infrastructure files manually, the generator reads
-[dtt.yaml](../examples/firebase_auth_example/dtt.yaml) and outputs declarative
-resources in `terraform/`:
+[lib/dtt_config.dart](../examples/firebase_auth_example/lib/dtt_config.dart) or
+`dtt.yaml` and synthesizes one declarative manifest with
+[TerraDart](https://terradart.dev):
+[terraform/main.tf.json](../terraform/main.tf.json). It holds the resources,
+variables, and outputs.
 
-- **Main Config**: [terraform/main.tf](../terraform/main.tf)
-- **Variable Defs**: [terraform/variables.tf](../terraform/variables.tf)
-- **Output Metrics**: [terraform/outputs.tf](../terraform/outputs.tf)
-
-Below is an illustration of the generated declarative resource blocks inside
-`terraform/main.tf` mapping our target service, secure IAM service agents, and
-triggers:
+Below is an HCL illustration of the resource blocks in `terraform/main.tf.json`
+mapping our target service, secure IAM service agents, and triggers:
 
 ```hcl
 # terraform/main.tf

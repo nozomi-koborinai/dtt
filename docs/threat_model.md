@@ -118,7 +118,7 @@ event queues on GCP.
 | **Local shell invocation**              | `lib/src/codegen/protoc_runner.dart`     | Strictly bound arguments. Never calls unescaped strings in raw shell pipelines.                                                      |
 | **Container build execution**           | `lib/src/deployer/docker_builder.dart`   | Orchestrated using pre-validated target names. Restricted to local Docker daemon or Google Cloud Build.                              |
 | **Terraform infrastructure deployment** | `lib/src/deployer/terraform_runner.dart` | Runs behind the user's specific GCP authorization profile; outputs variables to standard CLI output with masked outputs for secrets. |
-| **IAM Policy Bindings**                 | `terraform/main.tf`                      | Generates granular, service-account specific targets. Avoids granting global admin role policies.                                    |
+| **IAM Policy Bindings**                 | `terraform/main.tf.json`                 | Generates granular, service-account specific targets. Avoids granting global admin role policies.                                    |
 
 ---
 
@@ -159,7 +159,7 @@ malicious actors could trace the endpoint URL and inject falsified event bodies
   target service has `allUsers` access disabled. The OIDC token authentication
   is verified at the Google front-end router.
 - **Internal Ingress Routing**: Whenever feasible, default the Cloud Run ingress
-  configuration block inside `terraform/main.tf` to
+  configuration block inside `terraform/main.tf.json` to
   `INGRESS_TRAFFIC_INTERNAL_ONLY`. This blocks direct internet calls to the HTTP
   server, allowing only Eventarc and Internal VPC traffic to pass.
 

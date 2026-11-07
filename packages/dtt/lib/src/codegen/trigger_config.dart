@@ -17,6 +17,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
+import 'dart_config.dart';
+
 part 'trigger_config.g.dart';
 
 /// Mapping metadata tracking trigger types, import URIs, and class definitions.
@@ -40,7 +42,7 @@ final class TriggerTypeMeta {
   });
 }
 
-/// Strongly typed representation of a declared Eventarc trigger in dtt.yaml.
+/// Strongly typed representation of a declared Eventarc trigger.
 base class TriggerConfig {
   const TriggerConfig._({
     required this.name,
@@ -55,35 +57,39 @@ base class TriggerConfig {
   final String name;
   final TriggerType type;
   final String path;
-  final String handler;
+
+  /// The handler function name; `null` when `lib/dtt_config.dart` binds the
+  /// handler itself.
+  final String? handler;
   final String? resourceRef;
   final String? deadLetterTopic;
-  final String? retryPolicy;
+  final RetryPolicy? retryPolicy;
 
   TriggerTypeMeta get meta => type.meta;
 
-  factory TriggerConfig.fromYaml(YamlMap node) {
-    final paramsNode = node['parameters'] as YamlMap?;
-    final name = node['name'] as String? ?? 'trigger';
-    final typeStr =
-        (node['type'] as String?) ?? (paramsNode?['type'] as String?);
-    final path =
-        (node['path'] as String?) ??
-        (paramsNode?['path'] as String?) ??
-        '/events';
-    final handler =
-        (node['handler'] as String?) ??
-        (paramsNode?['handler'] as String?) ??
-        'onEvent';
-    final resourceRef =
-        (node['resource_ref'] as String?) ??
-        (paramsNode?['resource_ref'] as String?);
-    final deadLetterTopic =
-        (node['dead_letter_topic'] as String?) ??
-        (paramsNode?['dead_letter_topic'] as String?);
-    final retryPolicy =
-        (node['retry_policy'] as String?) ??
-        (paramsNode?['retry_policy'] as String?);
+  factory TriggerConfig.fromMap(
+    Map<Object?, Object?> node, {
+    String? defaultHandler,
+  }) {
+    final paramsNode = node['parameters'] as Map<Object?, Object?>?;
+    Object? field(String key) => node[key] ?? paramsNode?[key];
+
+    final name = field('name') as String? ?? 'trigger';
+    final typeStr = field('type') as String?;
+    final path = field('path') as String? ?? '/events';
+    final handler = field('handler') as String? ?? defaultHandler;
+    final resourceRef = field('resource_ref') as String?;
+    final deadLetterTopic = field('dead_letter_topic') as String?;
+    final retryPolicy = switch (field('retry_policy')) {
+      null => null,
+      {'max_attempts': final int maxAttempts} => RetryPolicy(
+        maxAttempts: maxAttempts,
+      ),
+      final other => throw FormatException(
+        'Trigger [$name] retry_policy must be a mapping such as '
+        '{max_attempts: 1}, not [$other].',
+      ),
+    };
 
     if (typeStr == null) {
       throw const FormatException(
@@ -92,14 +98,9 @@ base class TriggerConfig {
     }
 
     final type = TriggerType.fromIdentifier(typeStr);
-    final bucket =
-        (node['bucket'] as String?) ?? (paramsNode?['bucket'] as String?);
-    final document =
-        (node['document'] as String?) ?? (paramsNode?['document'] as String?);
-    final database =
-        (node['database'] as String?) ??
-        (paramsNode?['database'] as String?) ??
-        '(default)';
+    final bucket = field('bucket') as String?;
+    final document = field('document') as String?;
+    final database = field('database') as String? ?? '(default)';
 
     return switch (type) {
       TriggerType.gcsObjectFinalized ||
@@ -184,46 +185,129 @@ final class FirestoreTriggerConfig extends TriggerConfig {
   final String database;
 }
 
+/// Eventarc delivery retries, emitted as the trigger's `retry_policy` block.
+final class RetryPolicy {
+  const RetryPolicy({required this.maxAttempts});
+
+  final int maxAttempts;
+}
+
+enum ServiceKind { service, job }
+
+enum SecurityProfile { standard, secure }
+
+/// Where a package declares its config.
+enum ConfigSource {
+  /// `dtt.yaml`, whose triggers name their handler functions.
+  yaml,
+
+  /// `lib/dtt_config.dart`, whose `dttConfig` binds handlers directly.
+  dart,
+}
+
 class DttConfig {
   final String serviceName;
   final String projectId;
   final String region;
-  final YamlMap doc;
+  final ServiceKind kind;
+  final SecurityProfile securityProfile;
+  final Map<String, String> labels;
+  final List<TriggerConfig> triggers;
+  final ConfigSource source;
 
   DttConfig({
     required this.serviceName,
     required this.projectId,
     required this.region,
-    required this.doc,
+    required this.kind,
+    required this.securityProfile,
+    required this.labels,
+    required this.triggers,
+    required this.source,
   });
 
+  /// Parses the `dtt.yaml` shape, which `DttConfig.toJson()` in
+  /// `package:dtt_runtime` also emits.
+  factory DttConfig.fromMap(Map<Object?, Object?> doc, ConfigSource source) {
+    final serviceNode = doc['service'] as Map<Object?, Object?>?;
+    if (serviceNode == null) {
+      throw const FormatException(
+        'Config missing mandatory [service] mapping block.',
+      );
+    }
+
+    final triggersNode = doc['triggers'] as List<Object?>?;
+    if (triggersNode == null || triggersNode.isEmpty) {
+      throw const FormatException(
+        'Config missing [triggers] declarations list.',
+      );
+    }
+
+    final labelsNode = serviceNode['labels'] as Map<Object?, Object?>?;
+
+    return DttConfig(
+      serviceName: serviceNode['name'] as String? ?? 'dtt-service',
+      projectId: serviceNode['project_id'] as String? ?? 'gcp-project-id',
+      region: serviceNode['region'] as String? ?? 'us-central1',
+      kind: switch (serviceNode['kind'] ?? 'service') {
+        'service' => ServiceKind.service,
+        'job' => ServiceKind.job,
+        final other => throw FormatException('Unknown service kind [$other].'),
+      },
+      securityProfile: switch (serviceNode['security_profile'] ?? 'default') {
+        'default' => SecurityProfile.standard,
+        'secure' => SecurityProfile.secure,
+        final other => throw FormatException(
+          'Unknown security_profile [$other].',
+        ),
+      },
+      labels: {
+        for (final MapEntry(:key, :value) in (labelsNode ?? const {}).entries)
+          key.toString(): value.toString(),
+      },
+      triggers: [
+        for (final node in triggersNode)
+          if (node is Map<Object?, Object?>)
+            TriggerConfig.fromMap(
+              node,
+              defaultHandler: source == ConfigSource.yaml ? 'onEvent' : null,
+            )
+          else
+            throw const FormatException(
+              'Trigger mappings must specify name, type, path, and handler '
+              'callbacks.',
+            ),
+      ],
+      source: source,
+    );
+  }
+
+  /// Loads `lib/dtt_config.dart` when present, otherwise `dtt.yaml`.
   static Future<DttConfig> load(String packageDir) async {
+    if (await File(p.join(packageDir, dartConfigPath)).exists()) {
+      return DttConfig.fromMap(
+        await evaluateDartConfig(packageDir),
+        ConfigSource.dart,
+      );
+    }
+
     final configFile = File(p.join(packageDir, 'dtt.yaml'));
     if (!await configFile.exists()) {
       throw FileSystemException(
-        'Declarative config dtt.yaml not found inside package folder.',
+        'Neither $dartConfigPath nor dtt.yaml found inside package folder.',
         configFile.path,
       );
     }
 
-    final content = await configFile.readAsString();
-    final doc = loadYaml(content) as YamlMap;
-    final serviceNode = doc['service'] as YamlMap?;
-    if (serviceNode == null) {
-      throw const FormatException(
-        'Config dtt.yaml missing mandatory [service] mapping block.',
-      );
-    }
-
-    final serviceName = serviceNode['name'] as String? ?? 'dtt-service';
-    final projectId = serviceNode['project_id'] as String? ?? 'gcp-project-id';
-    final region = serviceNode['region'] as String? ?? 'us-central1';
-
-    return DttConfig(
-      serviceName: serviceName,
-      projectId: projectId,
-      region: region,
-      doc: doc,
-    );
+    final doc = loadYaml(await configFile.readAsString()) as YamlMap;
+    return DttConfig.fromMap(doc, ConfigSource.yaml);
   }
 }
+
+String toSnakeCase(String input) => input
+    .replaceAllMapped(
+      RegExp(r'(.)([A-Z])'),
+      (Match match) => '${match.group(1)}_${match.group(2)}',
+    )
+    .replaceAll('-', '_')
+    .toLowerCase();

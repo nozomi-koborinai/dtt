@@ -33,7 +33,17 @@ jobs:
       - name: Verify generated example manifests and Terraform
         run: |
           dart run packages/dtt/bin/dtt.dart generate --package-dir=examples/firebase_auth_example
+          git add --intent-to-add --all
           git diff --exit-code
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+
+      - name: Validate generated terraform/main.tf.json
+        run: |
+          terraform -chdir=terraform init -backend=false -input=false
+          terraform -chdir=terraform validate
 
       - name: Run package unit tests
         run: |

@@ -71,14 +71,15 @@ void main() {
         );
         check(genRes.exitCode).equals(0);
 
-        // Verify declarative main.tf contains no null_resource
-        final mainTfFile = File(p.join(tfDir, 'main.tf'));
+        // Verify declarative main.tf.json contains no null_resource
+        final mainTfFile = File(p.join(tfDir, 'main.tf.json'));
         check(await mainTfFile.exists()).isTrue();
-        final mainTfContent = await mainTfFile.readAsString();
-        check(
-          mainTfContent,
-        ).contains('resource "google_cloud_run_v2_service" "service"');
-        check(mainTfContent).not((c) => c.contains('null_resource'));
+        final resources =
+            (jsonDecode(await mainTfFile.readAsString())
+                    as Map<String, dynamic>)['resource']
+                as Map<String, dynamic>;
+        check(resources.keys).contains('google_cloud_run_v2_service');
+        check(resources.keys).not((c) => c.contains('null_resource'));
 
         // 3. Run dtt build
         print('2. Running dtt build...');
