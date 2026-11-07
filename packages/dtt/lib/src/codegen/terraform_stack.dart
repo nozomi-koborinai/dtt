@@ -31,274 +31,31 @@ const jobCloudEventEnv = 'DTT_CLOUD_EVENT';
 /// `terraform/main.tf.json`.
 final class DttStack extends Stack {
   DttStack(DttConfig config) : super(providers: _providers(config)) {
-    final projectId = variable<String>(
-      'project_id',
-      description: 'Target Google Cloud Platform Project ID.',
-      defaultValue: config.projectId,
-    );
-    final region = variable<String>(
-      'region',
-      description: 'Target GCP region for resources deployment.',
-      defaultValue: config.region,
-    );
-    final image = variable<String>(
-      'container_image',
-      description:
-          'Target Docker/Artifact Registry container image URL or digest.',
-    );
-    final labels = TfArg.literal({
-      'managed_by': 'dart_terraform_triggers',
-      ...config.labels,
-    });
-    final name = config.serviceName;
-    final saSuffix = name.length > 15 ? name.substring(0, 15) : name;
-
-    final project = add(DataGoogleProject('project'));
-    final invoker = add(
-      GoogleServiceAccount(
-        'eventarc_invoker',
-        accountId: .literal('dtt-$saSuffix-inv'),
-        displayName: .literal('Eventarc $name Invoker Service Account'),
-      ),
-    );
-    final invokerMember = _serviceAccountMember(invoker);
-    final runtime = switch (config.securityProfile) {
-      SecurityProfile.standard => null,
-      SecurityProfile.secure => add(
-        GoogleServiceAccount(
-          'runtime',
-          accountId: .literal('dtt-$saSuffix-run'),
-          displayName: .literal('$name runtime identity without project roles'),
-        ),
-      ),
+    final inputs = _addInputs(config);
+    final destination = switch (config.kind) {
+      ServiceKind.service => _addService(inputs),
+      ServiceKind.job => _addJob(inputs),
     };
-
-    final EventarcTriggerDestination Function(TriggerConfig) destination;
-    switch (config.kind) {
-      case ServiceKind.service:
-        final service = add(
-          GoogleCloudRunV2Service(
-            'service',
-            name: .literal(name),
-            location: region,
-            ingress: Ingress.internalOnly,
-            deletionProtection: const .literal(false),
-            labels: labels,
-            template: CloudRunV2ServiceTemplate(
-              serviceAccount: runtime?.ref,
-              containers: [
-                CloudRunV2ServiceContainers(
-                  image: image,
-                  ports: const CloudRunV2ServicePorts(
-                    containerPort: .literal(8080),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-        add(
-          GoogleCloudRunV2ServiceIamMember(
-            'invoker_role',
-            service: service.ref,
-            location: service.location,
-            role: const .literal('roles/run.invoker'),
-            member: invokerMember,
-          ),
-        );
-        addOutput(
-          'service_url',
-          service.uri,
-          description:
-              'URL of our deployed serverless Dart Cloud Run service '
-              'container.',
-        );
-        destination = (trigger) => EventarcTriggerDestination(
-          cloudRunService: EventarcTriggerCloudRunService(
-            service: service.name,
-            region: region,
-            path: .literal(trigger.path),
-          ),
-        );
-      case ServiceKind.job:
-        final job = add(
-          GoogleCloudRunV2Job(
-            'job',
-            name: .literal(name),
-            location: region,
-            deletionProtection: const .literal(false),
-            labels: labels,
-            template: CloudRunV2JobTemplate(
-              template: CloudRunV2JobTemplateTemplate(
-                serviceAccount: runtime?.ref,
-                containers: [CloudRunV2JobContainers(image: image)],
-              ),
-            ),
-          ),
-        );
-        add(
-          GoogleCloudRunV2JobIamMember(
-            'job_runner',
-            job: job.ref,
-            location: job.location,
-            role: const .literal('roles/run.developer'),
-            member: invokerMember,
-          ),
-        );
-        add(
-          GoogleProjectIamMember(
-            'workflows_invoker',
-            project: projectId,
-            role: const .literal('roles/workflows.invoker'),
-            member: invokerMember,
-          ),
-        );
-        addOutput(
-          'job_name',
-          job.name,
-          description: 'Name of the Cloud Run job each event executes.',
-        );
-        destination = (trigger) {
-          final workflow = add(
-            GoogleWorkflowsWorkflow(
-              'dispatch_${toSnakeCase(trigger.name)}',
-              name: .literal('$name-${trigger.name}'),
-              region: region,
-              serviceAccount: invoker.ref,
-              labels: labels,
-              sourceContents: TfArg.expression(
-                _runJobWorkflow(job, trigger.path),
-              ),
-            ),
-          );
-          return EventarcTriggerDestination(workflow: workflow.id);
-        };
-    }
-
     add(
       GoogleProjectIamMember(
         'eventarc_receiver',
-        project: projectId,
+        project: inputs.projectId,
         role: const .literal('roles/eventarc.eventReceiver'),
-        member: invokerMember,
+        member: inputs.invokerMember,
       ),
     );
-
     if (config.triggers.any((t) => t is FirestoreTriggerConfig)) {
-      final topic = add(
-        GooglePubsubTopic(
-          'firestore_topic',
-          name: .literal('$name-firestore-topic'),
-          labels: labels,
-        ),
-      );
-      add(
-        GooglePubsubTopicIamMember(
-          'firestore_pubsub_publisher',
-          topic: topic.ref,
-          role: const .literal('roles/pubsub.publisher'),
-          member: _serviceAgent(project, 'gcp-sa-firestore'),
-        ),
-      );
-      add(
-        GoogleProjectIamAuditConfig(
-          'firestore_audit',
-          project: projectId,
-          service: const .literal('firestore.googleapis.com'),
-          auditLogConfig: const [
-            ProjectIamAuditConfigAuditLogConfig(
-              logType: ProjectIamAuditConfigAuditLogConfigLogType.dataWrite,
-            ),
-            ProjectIamAuditConfigAuditLogConfig(
-              logType: ProjectIamAuditConfigAuditLogConfigLogType.dataRead,
-            ),
-          ],
-        ),
-      );
+      _addFirestoreDelivery(inputs);
     }
-
     if (config.triggers.any((t) => t is StorageTriggerConfig)) {
-      final gcsAccount = add(
-        DataGoogleStorageProjectServiceAccount('gcs_account'),
-      );
-      final topic = add(
-        GooglePubsubTopic(
-          'storage_topic',
-          name: .literal('$name-storage-topic'),
-          labels: labels,
-        ),
-      );
-      add(
-        GooglePubsubTopicIamMember(
-          'storage_pubsub_publisher',
-          topic: topic.ref,
-          role: const .literal('roles/pubsub.publisher'),
-          member: .arg(
-            TfArg.expression(
-              'serviceAccount:${gcsAccount.emailAddress.toTfJson()}',
-            ),
-          ),
-        ),
-      );
+      _addStorageDelivery(inputs);
     }
-
-    add(
-      GoogleServiceAccountIamMember(
-        'pubsub_token_creator',
-        serviceAccount: invoker.ref,
-        role: const .literal('roles/iam.serviceAccountTokenCreator'),
-        member: _serviceAgent(project, 'gcp-sa-pubsub'),
-      ),
-    );
-    add(
-      GoogleServiceAccountIamMember(
-        'eventarc_sa_user',
-        serviceAccount: invoker.ref,
-        role: const .literal('roles/iam.serviceAccountUser'),
-        member: _serviceAgent(project, 'gcp-sa-eventarc'),
-      ),
-    );
+    _addServiceAgentGrants(inputs);
 
     final beta = providers.whereType<GoogleBetaProvider>().firstOrNull;
     final triggers = [
       for (final trigger in config.triggers)
-        add(
-          GoogleEventarcTrigger(
-            'trigger_${toSnakeCase(trigger.name)}',
-            name: .literal('$name-${trigger.name}-trigger'),
-            location: switch (trigger.meta.triggerLocation) {
-              final location? => .literal(location),
-              null => region,
-            },
-            provider: trigger.meta.isGlobal ? beta : null,
-            eventDataContentType: switch (trigger.meta.eventDataContentType) {
-              final contentType? => .literal(contentType),
-              null => null,
-            },
-            serviceAccount: invoker.ref,
-            labels: labels,
-            destination: destination(trigger),
-            matchingCriteria: [
-              for (final (attribute, value) in _filters(trigger))
-                EventarcTriggerMatchingCriteria(
-                  attribute: .literal(attribute),
-                  value: .literal(value),
-                ),
-            ],
-            transport: switch (trigger.deadLetterTopic) {
-              final topic? => EventarcTriggerTransport(
-                pubsub: EventarcTriggerPubsub(topic: .literal(topic)),
-              ),
-              null => null,
-            },
-            retryPolicy: switch (trigger.retryPolicy) {
-              final policy? => EventarcTriggerRetryPolicy(
-                maxAttempts: .literal(policy.maxAttempts),
-              ),
-              null => null,
-            },
-          ),
-        ),
+        _addTrigger(inputs, trigger, destination(trigger), beta),
     ];
     addOutput(
       'eventarc_trigger_ids',
@@ -318,6 +75,315 @@ final class DttStack extends Stack {
         region: r'${var.region}',
       ),
   ];
+
+  _StackInputs _addInputs(DttConfig config) {
+    final projectId = variable<String>(
+      'project_id',
+      description: 'Target Google Cloud Platform Project ID.',
+      defaultValue: config.projectId,
+    );
+    final region = variable<String>(
+      'region',
+      description: 'Target GCP region for resources deployment.',
+      defaultValue: config.region,
+    );
+    final image = variable<String>(
+      'container_image',
+      description:
+          'Target Docker/Artifact Registry container image URL or digest.',
+    );
+    final name = config.serviceName;
+    final saSuffix = name.length > 15 ? name.substring(0, 15) : name;
+    final project = add(DataGoogleProject('project'));
+    final invoker = add(
+      GoogleServiceAccount(
+        'eventarc_invoker',
+        accountId: .literal('dtt-$saSuffix-inv'),
+        displayName: .literal('Eventarc $name Invoker Service Account'),
+      ),
+    );
+    return _StackInputs(
+      name: name,
+      projectId: projectId,
+      region: region,
+      image: image,
+      labels: .literal({
+        'managed_by': 'dart_terraform_triggers',
+        ...config.labels,
+      }),
+      project: project,
+      invoker: invoker,
+      runtime: _addRuntimeAccount(config.securityProfile, name, saSuffix),
+    );
+  }
+
+  /// The secure profile runs the workload as an identity with no project
+  /// roles instead of the default compute service account.
+  GoogleServiceAccount? _addRuntimeAccount(
+    SecurityProfile profile,
+    String name,
+    String saSuffix,
+  ) => switch (profile) {
+    SecurityProfile.standard => null,
+    SecurityProfile.secure => add(
+      GoogleServiceAccount(
+        'runtime',
+        accountId: .literal('dtt-$saSuffix-run'),
+        displayName: .literal('$name runtime identity without project roles'),
+      ),
+    ),
+  };
+
+  EventarcTriggerDestination Function(TriggerConfig) _addService(
+    _StackInputs inputs,
+  ) {
+    final service = add(
+      GoogleCloudRunV2Service(
+        'service',
+        name: .literal(inputs.name),
+        location: inputs.region,
+        ingress: Ingress.internalOnly,
+        deletionProtection: const .literal(false),
+        labels: inputs.labels,
+        template: CloudRunV2ServiceTemplate(
+          serviceAccount: inputs.runtime?.ref,
+          containers: [
+            CloudRunV2ServiceContainers(
+              image: inputs.image,
+              ports: const CloudRunV2ServicePorts(
+                containerPort: .literal(8080),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    add(
+      GoogleCloudRunV2ServiceIamMember(
+        'invoker_role',
+        service: service.ref,
+        location: service.location,
+        role: const .literal('roles/run.invoker'),
+        member: inputs.invokerMember,
+      ),
+    );
+    addOutput(
+      'service_url',
+      service.uri,
+      description:
+          'URL of our deployed serverless Dart Cloud Run service '
+          'container.',
+    );
+    return (trigger) => EventarcTriggerDestination(
+      cloudRunService: EventarcTriggerCloudRunService(
+        service: service.name,
+        region: inputs.region,
+        path: .literal(trigger.path),
+      ),
+    );
+  }
+
+  /// Eventarc cannot start a Cloud Run job, so each trigger targets a
+  /// workflow that runs the job once per event.
+  EventarcTriggerDestination Function(TriggerConfig) _addJob(
+    _StackInputs inputs,
+  ) {
+    final job = add(
+      GoogleCloudRunV2Job(
+        'job',
+        name: .literal(inputs.name),
+        location: inputs.region,
+        deletionProtection: const .literal(false),
+        labels: inputs.labels,
+        template: CloudRunV2JobTemplate(
+          template: CloudRunV2JobTemplateTemplate(
+            serviceAccount: inputs.runtime?.ref,
+            containers: [CloudRunV2JobContainers(image: inputs.image)],
+          ),
+        ),
+      ),
+    );
+    add(
+      GoogleCloudRunV2JobIamMember(
+        'job_runner',
+        job: job.ref,
+        location: job.location,
+        role: const .literal('roles/run.developer'),
+        member: inputs.invokerMember,
+      ),
+    );
+    add(
+      GoogleProjectIamMember(
+        'workflows_invoker',
+        project: inputs.projectId,
+        role: const .literal('roles/workflows.invoker'),
+        member: inputs.invokerMember,
+      ),
+    );
+    addOutput(
+      'job_name',
+      job.name,
+      description: 'Name of the Cloud Run job each event executes.',
+    );
+    return (trigger) {
+      final workflow = add(
+        GoogleWorkflowsWorkflow(
+          'dispatch_${toSnakeCase(trigger.name)}',
+          name: .literal('${inputs.name}-${trigger.name}'),
+          region: inputs.region,
+          serviceAccount: inputs.invoker.ref,
+          labels: inputs.labels,
+          sourceContents: TfArg.expression(_runJobWorkflow(job, trigger.path)),
+        ),
+      );
+      return EventarcTriggerDestination(workflow: workflow.id);
+    };
+  }
+
+  void _addFirestoreDelivery(_StackInputs inputs) {
+    final topic = add(
+      GooglePubsubTopic(
+        'firestore_topic',
+        name: .literal('${inputs.name}-firestore-topic'),
+        labels: inputs.labels,
+      ),
+    );
+    add(
+      GooglePubsubTopicIamMember(
+        'firestore_pubsub_publisher',
+        topic: topic.ref,
+        role: const .literal('roles/pubsub.publisher'),
+        member: _serviceAgent(inputs.project, 'gcp-sa-firestore'),
+      ),
+    );
+    add(
+      GoogleProjectIamAuditConfig(
+        'firestore_audit',
+        project: inputs.projectId,
+        service: const .literal('firestore.googleapis.com'),
+        auditLogConfig: const [
+          ProjectIamAuditConfigAuditLogConfig(
+            logType: ProjectIamAuditConfigAuditLogConfigLogType.dataWrite,
+          ),
+          ProjectIamAuditConfigAuditLogConfig(
+            logType: ProjectIamAuditConfigAuditLogConfigLogType.dataRead,
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _addStorageDelivery(_StackInputs inputs) {
+    final gcsAccount = add(
+      DataGoogleStorageProjectServiceAccount('gcs_account'),
+    );
+    final topic = add(
+      GooglePubsubTopic(
+        'storage_topic',
+        name: .literal('${inputs.name}-storage-topic'),
+        labels: inputs.labels,
+      ),
+    );
+    add(
+      GooglePubsubTopicIamMember(
+        'storage_pubsub_publisher',
+        topic: topic.ref,
+        role: const .literal('roles/pubsub.publisher'),
+        member: .arg(
+          TfArg.expression(
+            'serviceAccount:${gcsAccount.emailAddress.toTfJson()}',
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _addServiceAgentGrants(_StackInputs inputs) {
+    add(
+      GoogleServiceAccountIamMember(
+        'pubsub_token_creator',
+        serviceAccount: inputs.invoker.ref,
+        role: const .literal('roles/iam.serviceAccountTokenCreator'),
+        member: _serviceAgent(inputs.project, 'gcp-sa-pubsub'),
+      ),
+    );
+    add(
+      GoogleServiceAccountIamMember(
+        'eventarc_sa_user',
+        serviceAccount: inputs.invoker.ref,
+        role: const .literal('roles/iam.serviceAccountUser'),
+        member: _serviceAgent(inputs.project, 'gcp-sa-eventarc'),
+      ),
+    );
+  }
+
+  GoogleEventarcTrigger _addTrigger(
+    _StackInputs inputs,
+    TriggerConfig trigger,
+    EventarcTriggerDestination destination,
+    GoogleBetaProvider? beta,
+  ) => add(
+    GoogleEventarcTrigger(
+      'trigger_${toSnakeCase(trigger.name)}',
+      name: .literal('${inputs.name}-${trigger.name}-trigger'),
+      location: switch (trigger.meta.triggerLocation) {
+        final location? => .literal(location),
+        null => inputs.region,
+      },
+      provider: trigger.meta.isGlobal ? beta : null,
+      eventDataContentType: switch (trigger.meta.eventDataContentType) {
+        final contentType? => .literal(contentType),
+        null => null,
+      },
+      serviceAccount: inputs.invoker.ref,
+      labels: inputs.labels,
+      destination: destination,
+      matchingCriteria: [
+        for (final (attribute, value) in _filters(trigger))
+          EventarcTriggerMatchingCriteria(
+            attribute: .literal(attribute),
+            value: .literal(value),
+          ),
+      ],
+      transport: switch (trigger.deadLetterTopic) {
+        final topic? => EventarcTriggerTransport(
+          pubsub: EventarcTriggerPubsub(topic: .literal(topic)),
+        ),
+        null => null,
+      },
+      retryPolicy: switch (trigger.retryPolicy) {
+        final policy? => EventarcTriggerRetryPolicy(
+          maxAttempts: .literal(policy.maxAttempts),
+        ),
+        null => null,
+      },
+    ),
+  );
+}
+
+/// Values every resource builder in [DttStack] shares.
+final class _StackInputs {
+  final String name;
+  final TfArg<String> projectId;
+  final TfArg<String> region;
+  final TfArg<String> image;
+  final TfArg<Map<String, String>> labels;
+  final DataGoogleProject project;
+  final GoogleServiceAccount invoker;
+  final GoogleServiceAccount? runtime;
+
+  _StackInputs({
+    required this.name,
+    required this.projectId,
+    required this.region,
+    required this.image,
+    required this.labels,
+    required this.project,
+    required this.invoker,
+    required this.runtime,
+  });
+
+  IamPrincipal get invokerMember => _serviceAccountMember(invoker);
 }
 
 IamPrincipal _serviceAccountMember(GoogleServiceAccount account) =>
