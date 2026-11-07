@@ -52,61 +52,15 @@ class _DttGenerator {
     }
 
     final packageName = p.basename(packageDir);
-    final isJob = config.kind == ServiceKind.job;
-    final imports = <String>{
-      'package:dtt_runtime/dtt_runtime.dart',
-      'package:shelf/shelf.dart',
-      if (isJob)
-        'dart:io'
-      else
-        'package:google_cloud_shelf/google_cloud_shelf.dart',
-    };
-
-    final registrations = StringBuffer()..write('DttEventRouter()');
-    switch (config.source) {
-      case ConfigSource.dart:
-        imports.add('package:$packageName/dtt_config.dart');
-      case ConfigSource.yaml:
-        imports.add('package:google_cloud_events/google_cloud_events.dart');
-        for (final trigger in config.triggers) {
-          final handler = trigger.handler!;
-          imports.add(
-            'package:$packageName/src/handlers/${toSnakeCase(handler)}.dart',
-          );
-          final pathArg = trigger.path != trigger.meta.defaultPath
-              ? "\n      path: '${trigger.path}',"
-              : '';
-          registrations.write('''
-
-    ..registerTrigger(
-      trigger: ${trigger.meta.enumName},$pathArg
-      handler: $handler,
-    )''');
-        }
-    }
-
-    final mainMethod = Method(
-      (m) => m
-        ..name = 'main'
-        ..returns = refer('void')
-        ..modifier = MethodModifier.async
-        ..body = Block((b) {
-          b.statements.add(
-            declareFinal(
-              'router',
-            ).assign(CodeExpression(Code(registrations.toString()))).statement,
-          );
-          if (config.source == ConfigSource.dart) {
-            b.statements.add(_registerDartConfig);
-          }
-          b.statements.add(isJob ? _dispatchJobEvent : _serveRouter);
-        }),
-    );
-
     final library = Library(
       (l) => l
-        ..directives.addAll((imports.toList()..sort()).map(Directive.import))
-        ..body.add(mainMethod),
+        ..directives.addAll(
+          (_serverImports(
+            config,
+            packageName,
+          ).toList()..sort()).map(Directive.import),
+        )
+        ..body.add(_serverMain(config)),
     );
 
     final emitter = DartEmitter(useNullSafetySyntax: true);
@@ -142,6 +96,60 @@ class _DttGenerator {
       if (await file.exists()) await file.delete();
     }
   }
+}
+
+Set<String> _serverImports(DttConfig config, String packageName) => {
+  'package:dtt_runtime/dtt_runtime.dart',
+  'package:shelf/shelf.dart',
+  switch (config.kind) {
+    ServiceKind.service => 'package:google_cloud_shelf/google_cloud_shelf.dart',
+    ServiceKind.job => 'dart:io',
+  },
+  ...switch (config.source) {
+    ConfigSource.dart => ['package:$packageName/dtt_config.dart'],
+    ConfigSource.yaml => [
+      'package:google_cloud_events/google_cloud_events.dart',
+      for (final trigger in config.triggers)
+        'package:$packageName/src/handlers/${toSnakeCase(trigger.handler!)}.dart',
+    ],
+  },
+};
+
+Method _serverMain(DttConfig config) => Method(
+  (m) => m
+    ..name = 'main'
+    ..returns = refer('void')
+    ..modifier = MethodModifier.async
+    ..body = Block.of([
+      declareFinal(
+        'router',
+      ).assign(CodeExpression(Code(_routerExpression(config)))).statement,
+      if (config.source == ConfigSource.dart) _registerDartConfig,
+      switch (config.kind) {
+        ServiceKind.service => _serveRouter,
+        ServiceKind.job => _dispatchJobEvent,
+      },
+    ]),
+);
+
+/// A YAML config names its handlers, so each trigger is registered inline.
+/// A Dart config registers its own triggers through [_registerDartConfig].
+String _routerExpression(DttConfig config) => [
+  'DttEventRouter()',
+  if (config.source == ConfigSource.yaml)
+    for (final trigger in config.triggers) _yamlRegistration(trigger),
+].join();
+
+String _yamlRegistration(TriggerConfig trigger) {
+  final pathArg = trigger.path != trigger.meta.defaultPath
+      ? "\n      path: '${trigger.path}',"
+      : '';
+  return '''
+
+    ..registerTrigger(
+      trigger: ${trigger.meta.enumName},$pathArg
+      handler: ${trigger.handler},
+    )''';
 }
 
 const _registerDartConfig = Code('''
