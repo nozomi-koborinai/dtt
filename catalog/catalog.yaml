@@ -29,6 +29,9 @@ services:
     baseline_action: written
     trigger_location: nam5
     content_type: application/protobuf
+    filters:
+      - document
+      - database: (default)
     triggers:
       - google.cloud.firestore.document.v1.created
       - google.cloud.firestore.document.v1.deleted
@@ -51,6 +54,8 @@ services:
     events_import: google/events/cloud/storage/v1/data.pb.dart
     base_path: /events/uploads
     baseline_action: finalized
+    filters:
+      - bucket
     triggers:
       - google.cloud.storage.object.v1.archived
       - google.cloud.storage.object.v1.deleted
